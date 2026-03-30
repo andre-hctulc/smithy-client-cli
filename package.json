@@ -1,0 +1,26 @@
+{
+    "name": "@dre44/smithy-client-cli",
+    "version": "0.1.4",
+    "private": true,
+    "description": "",
+    "type": "module",
+    "scripts": {
+        "tc": "tsc --noEmit",
+        "tc:watch": "tsc --noEmit --watch",
+        "prebuild": "rm -rf dist",
+        "build": "tsc",
+        "test": "tsx test/main.ts"
+    },
+    "main": "./dist/index.js",
+    "keywords": [],
+    "author": "André Thomas",
+    "license": "ISC",
+    "dependencies": {
+        "commander": "^14.0.3",
+        "dot-prop": "^10.1.0"
+    },
+    "devDependencies": {
+        "@smithy/smithy-client": "^4.12.3",
+        "@types/node": "^22.14.1"
+    }
+}

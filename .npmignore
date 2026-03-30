@@ -1,0 +1,12 @@
+test
+*.code-workspace
+tsconfig.json
+src
+.vscode
+.DS_Store
+index.ts
+.parcel-cache
+docs
+scripts
+.env
+.turbo

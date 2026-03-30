@@ -1,0 +1,11 @@
+node_modules
+.DS_Store
+!babel.config.js
+*.code-workspace
+dist
+.env
+.vscode
+package-lock.json
+.parcel-cache
+.turbo
+CHANGELOG.md
