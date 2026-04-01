@@ -1,7 +1,6 @@
 {
     "name": "@dre44/smithy-client-cli",
     "version": "0.1.4",
-    "private": true,
     "description": "",
     "type": "module",
     "scripts": {

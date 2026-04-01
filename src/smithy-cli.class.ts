@@ -1,30 +1,50 @@
 import { Command, type ParseOptions } from "commander";
 import type { AnyClient, BaseShape, SmithyModel } from "./smithy.types.js";
-import { flattenShape, resolveShape, parseInputOptions } from "./util.js";
+import { flattenShape, resolveShape, parseInputOptions, pascalToKebabCase } from "./util.js";
 import { isReadable } from "stream";
 import { createWriteStream } from "fs";
 import { writeFile } from "fs/promises";
 
 export interface SmithyCliOptions {
     handle?: (program: Command) => void;
+    handleCommand?: (command: Command, operationName: string, operation: any) => void;
+    description?: string;
 }
+
+interface AuthOptions {
+    apiKey?: string;
+    bearerToken?: string;
+    data?: Record<string, any>;
+}
+
+export type ClientFactory = (options: AuthOptions & Record<string, any>) => AnyClient | Promise<AnyClient>;
 
 export class SmithyCli {
     #model: SmithyModel;
-    #client: AnyClient;
+    #clientFactory: ClientFactory;
     #program = new Command();
     #operations: Record<string, any> = {};
     #module: any;
+    #cliName: string;
+    #options: SmithyCliOptions;
 
-    constructor(client: AnyClient, clientModule: any, model: SmithyModel) {
-        this.#client = client;
+    constructor(
+        cliName: string,
+        clientFactory: ClientFactory,
+        clientModule: any,
+        model: SmithyModel,
+        options: SmithyCliOptions = {},
+    ) {
+        this.#options = options;
+        this.#cliName = cliName;
+        this.#clientFactory = clientFactory;
         this.#model = model;
         this.#module = clientModule;
         this.#discoverOperations();
-        this.#initProgram();
     }
 
     start(argv?: string[], options?: ParseOptions) {
+        this.#initProgram();
         this.#program.parse(argv ?? process.argv, options);
     }
 
@@ -76,10 +96,12 @@ export class SmithyCli {
     #initProgram() {
         this.#discoverModuleCommands();
 
-        const serviceTarget =
-            this.#client.config.protocolSettings?.serviceTarget ?? "<service_name_unresolved>";
+        this.#program
+            .name(this.#cliName)
+            .description(this.#options.description ?? `CLI for ${this.#cliName}`)
+            .version("0.0.1");
 
-        this.#program.name(serviceTarget).description(`CLI for ${serviceTarget}`).version("0.0.1");
+        this.#options.handle?.(this.#program);
 
         for (const [moduleCommandName, ModuleCommand] of Object.entries(this.#moduleCommands)) {
             const commandName = moduleCommandName.replace(/Command$/, "");
@@ -89,7 +111,7 @@ export class SmithyCli {
                 throw new Error(`No matching operation found in Smithy model for command: ${commandName}`);
             }
 
-            const cliCommand = new Command(moduleCommandName)
+            const cliCommand = new Command(commandName)
                 .description(operation.documentation || `Execute the ${commandName} command`)
                 .option(
                     "-o --output-file <file>",
@@ -98,11 +120,16 @@ export class SmithyCli {
                 .option(
                     "--output-length <number>",
                     "Truncate output to specified length (for non-file output)",
-                );
+                )
+                .option("--api-key <key>", "API key for authentication")
+                .option("--bearer-token <token>", "Bearer token for authentication")
+                .option("--auth-data <json>", "Additional JSON data for authentication")
+                .option("-e --endpoint <url>", "Service endpoint");
 
             const fields = flattenShape(operation.inputShape);
-
             this.#registerOptions(cliCommand, fields);
+
+            this.#options.handleCommand?.(cliCommand, commandName, operation);
 
             cliCommand.action(async (options) => {
                 let input: Record<string, any> = {};
@@ -117,7 +144,23 @@ export class SmithyCli {
                     input = parseInputOptions(options, fields);
                 }
 
-                const res = await this.#client.send(new ModuleCommand(input));
+                let authData: Record<string, any> | undefined;
+                if (options.authData) {
+                    try {
+                        authData = JSON.parse(options.authData);
+                    } catch (e) {
+                        throw new Error("Auth data is not valid JSON");
+                    }
+                }
+
+                const client = await this.#clientFactory({
+                    ...options,
+                    apiKey: options.apiKey,
+                    bearerToken: options.bearerToken,
+                    data: authData,
+                });
+
+                const res = await client.send(new ModuleCommand(input));
                 await this.#handleResponse(
                     commandName,
                     res,

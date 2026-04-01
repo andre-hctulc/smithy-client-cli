@@ -11,9 +11,7 @@ export interface SmithyModel {
             type: string;
             input?: SmithyTarget;
             output?: SmithyTarget;
-            traits?: {
-                "smithy.api#documentation"?: string;
-            };
+            traits?: Record<string, any>;
             mixins?: Array<SmithyTarget>;
             members?: Record<string, SmithyTarget>;
             member?: SmithyTarget;

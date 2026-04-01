@@ -179,3 +179,10 @@ function coerceValue(value: unknown, shape: BaseShape): any {
 
     return value;
 }
+
+export function pascalToKebabCase(str: string): string {
+    return str
+        .replace(/([a-z])([A-Z])/g, "$1-$2")
+        .replace(/[\s_]+/g, "-")
+        .toLowerCase();
+}

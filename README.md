@@ -1,1 +1,1 @@
-# extension-micro
+# smithy-client-cli
