@@ -90,14 +90,31 @@ export function parseInputOptions(options: Record<string, any>, fields: BaseShap
 
     for (let [key, value] of Object.entries(options)) {
         // process only input options
-        if (!key.startsWith("in-")) continue;
+        if (!/^in[A-Z]/.test(key)) continue;
 
-        key = key.replace(/^in-/, ""); // Remove "in-" prefix if present
-        const shape = fields.find((s) => s.name === key);
-        if (!shape) {
-            throw new Error(`Unknown option: ${key}`);
+        // find shape from key. The actual key cannot be derived from the option name:
+        // We need to check both the capitalized version (e.g. "inUserId" -> "UserId") and the lower camel case version ("inUserId" -> "userId")
+        const keyCapitalized = key.replace(/^in/, "");
+        const keyLower = keyCapitalized.charAt(0).toLowerCase() + keyCapitalized.slice(1);
+        let keyUsed: string | undefined;
+
+        const shape = fields.find((s) => {
+            if (s.name === keyCapitalized) {
+                keyUsed = keyCapitalized;
+                return true;
+            }
+            if (s.name === keyLower) {
+                keyUsed = keyLower;
+                return true;
+            }
+            return false;
+        });
+
+        if (!shape || keyUsed === undefined) {
+            throw new Error(`Unknown option: ${keyLower}|${keyCapitalized}`);
         }
-        setProperty(result, key, coerceValue(value, shape));
+
+        setProperty(result, keyUsed, coerceValue(value, shape));
     }
 
     return result;

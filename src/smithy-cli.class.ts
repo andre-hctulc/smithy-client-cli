@@ -15,6 +15,8 @@ interface AuthOptions {
     apiKey?: string;
     bearerToken?: string;
     data?: Record<string, any>;
+    accessKeyId?: string;
+    secretAccessKey?: string;
 }
 
 export type ClientFactory = (options: AuthOptions & Record<string, any>) => AnyClient | Promise<AnyClient>;
@@ -124,7 +126,9 @@ export class SmithyCli {
                 .option("--api-key <key>", "API key for authentication")
                 .option("--bearer-token <token>", "Bearer token for authentication")
                 .option("--auth-data <json>", "Additional JSON data for authentication")
-                .option("-e --endpoint <url>", "Service endpoint");
+                .option("--access-key-id <id>", "Access key ID for authentication")
+                .option("--secret-access-key <key>", "Secret access key for authentication")
+                .option("-e --endpoint <url>", "Service endpoint")
 
             const fields = flattenShape(operation.inputShape);
             this.#registerOptions(cliCommand, fields);
@@ -155,8 +159,6 @@ export class SmithyCli {
 
                 const client = await this.#clientFactory({
                     ...options,
-                    apiKey: options.apiKey,
-                    bearerToken: options.bearerToken,
                     data: authData,
                 });
 
@@ -180,6 +182,8 @@ export class SmithyCli {
         outputLength?: number,
     ): Promise<void> {
         writeToFile = writeToFile ? writeToFile.replace(/{{commandName}}/g, commandName) : undefined;
+
+        // BUG binary response includes helper methods like transformToWebStream etc
         if (
             response instanceof Blob ||
             Buffer.isBuffer(response) ||
