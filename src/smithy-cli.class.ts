@@ -1,6 +1,6 @@
 import { Command, type ParseOptions } from "commander";
 import type { AnyClient, BaseShape, SmithyModel } from "./smithy.types.js";
-import { flattenShape, resolveShape, parseInputOptions, pascalToKebabCase } from "./util.js";
+import { flattenShape, resolveShape, parseInputOptions } from "./util.js";
 import { isReadable } from "stream";
 import { createWriteStream } from "fs";
 import { writeFile } from "fs/promises";
