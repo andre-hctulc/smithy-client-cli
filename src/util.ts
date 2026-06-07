@@ -1,3 +1,4 @@
+import { readFileSync } from "fs";
 import type { SmithyModel, BaseShape } from "./smithy.types.js";
 import { setProperty } from "dot-prop";
 
@@ -84,37 +85,47 @@ export function flattenShape(shape: any, prefix = ""): BaseShape[] {
 
     return [{ name: prefix, type: shape.type }];
 }
+/**
+ * options key -> shape key
+ */
+function parseKey(key: string, fields: BaseShape[]): [string, BaseShape] {
+    const keyCapitalized = key.replace(/^inj?/, "");
+    const keyLower = keyCapitalized.charAt(0).toLowerCase() + keyCapitalized.slice(1);
+    let keyUsed: string | undefined;
+    const shape = fields.find((s) => {
+        if (s.name === keyCapitalized) {
+            keyUsed = keyCapitalized;
+            return true;
+        }
+        if (s.name === keyLower) {
+            keyUsed = keyLower;
+            return true;
+        }
+        return false;
+    });
 
-export function parseInputOptions(options: Record<string, any>, fields: BaseShape[]): any {
-    const result: any = {};
+    if (!shape || keyUsed === undefined) {
+        throw new Error(`Unknown option: ${keyLower}|${keyCapitalized}`);
+    }
+
+    return [keyUsed, shape];
+}
+
+export function parseInputOptions(options: Record<string, any>, fields: BaseShape[]): Record<string, any> {
+    const result: Record<string, any> = {};
 
     for (let [key, value] of Object.entries(options)) {
-        // process only input options
-        if (!/^in[A-Z]/.test(key)) continue;
-
-        // find shape from key. The actual key cannot be derived from the option name:
-        // We need to check both the capitalized version (e.g. "inUserId" -> "UserId") and the lower camel case version ("inUserId" -> "userId")
-        const keyCapitalized = key.replace(/^in/, "");
-        const keyLower = keyCapitalized.charAt(0).toLowerCase() + keyCapitalized.slice(1);
-        let keyUsed: string | undefined;
-
-        const shape = fields.find((s) => {
-            if (s.name === keyCapitalized) {
-                keyUsed = keyCapitalized;
-                return true;
-            }
-            if (s.name === keyLower) {
-                keyUsed = keyLower;
-                return true;
-            }
-            return false;
-        });
-
-        if (!shape || keyUsed === undefined) {
-            throw new Error(`Unknown option: ${keyLower}|${keyCapitalized}`);
+        // input options: Parse inline input fragments
+        if (/^in[A-Z]/.test(key)) {
+            const [keyUsed, shape] = parseKey(key, fields);
+            setProperty(result, keyUsed, coerceValue(value, shape));
         }
-
-        setProperty(result, keyUsed, coerceValue(value, shape));
+        // json input options: Read input fragment from json file
+        else if (/^inj[A-Z]/.test(key)) {
+            const [keyUsed, shape] = parseKey(key, fields);
+            const fileContent = readFileSync(value as string, "utf-8");
+            setProperty(result, keyUsed, coerceValue(fileContent, shape));
+        }
     }
 
     return result;
@@ -177,6 +188,7 @@ function coerceValue(value: unknown, shape: BaseShape): any {
         if (value && typeof value === "object") {
             return value;
         }
+
         throw new TypeError(`Value for ${shape.name} must be an object or JSON string`);
     }
 
@@ -202,4 +214,23 @@ export function pascalToKebabCase(str: string): string {
         .replace(/([a-z])([A-Z])/g, "$1-$2")
         .replace(/[\s_]+/g, "-")
         .toLowerCase();
+}
+
+export function parseJson(fileOrJson: string, label: string) {
+    fileOrJson = fileOrJson.trim();
+
+    if (fileOrJson.startsWith("{")) {
+        try {
+            return JSON.parse(fileOrJson);
+        } catch (e) {
+            throw new TypeError(`${label} is not valid JSON`);
+        }
+    } else {
+        const content = readFileSync(fileOrJson, "utf-8");
+        try {
+            return JSON.parse(content);
+        } catch (e) {
+            throw new TypeError(`${label} file does not contain valid JSON`);
+        }
+    }
 }

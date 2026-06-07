@@ -1,6 +1,6 @@
 import { Command, type ParseOptions } from "commander";
 import type { AnyClient, BaseShape, SmithyModel } from "./smithy.types.js";
-import { flattenShape, resolveShape, parseInputOptions } from "./util.js";
+import { flattenShape, resolveShape, parseInputOptions, parseJson } from "./util.js";
 import { isReadable } from "stream";
 import { createWriteStream } from "fs";
 import { writeFile } from "fs/promises";
@@ -19,7 +19,15 @@ interface AuthOptions {
     secretAccessKey?: string;
 }
 
-export type ClientFactory = (options: AuthOptions & Record<string, any>) => AnyClient | Promise<AnyClient>;
+interface EndpointOptions {
+    endpoint?: string;
+}
+
+interface ClientFactoryOptions extends AuthOptions, EndpointOptions {
+    [key: string]: any;
+}
+
+export type ClientFactory = (options: ClientFactoryOptions) => AnyClient | Promise<AnyClient>;
 
 export class SmithyCli {
     #model: SmithyModel;
@@ -86,13 +94,20 @@ export class SmithyCli {
     #registerOptions(command: Command, fields: BaseShape[]) {
         for (const field of fields) {
             const name = field.name || "root";
+
+            // inline input
             const flag = `--in-${name} <value>`;
             const description = `${field.type}`;
             command.option(flag, description);
+
+            // json input
+            const jsonFlag = `--inj-${name} <path>`;
+            const jsonDescription = `${field.type} - Read from JSON file`;
+            command.option(jsonFlag, jsonDescription);
         }
 
-        // Optional raw JSON input (VERY useful)
-        command.option("--input <json>", "Raw JSON input");
+        // Full input. Overrides other input options if provided
+        command.option("--input <jsonOrPath>", `Full input - JSON file path or raw JSON string`);
     }
 
     #initProgram() {
@@ -125,10 +140,13 @@ export class SmithyCli {
                 )
                 .option("--api-key <key>", "API key for authentication")
                 .option("--bearer-token <token>", "Bearer token for authentication")
-                .option("--auth-data <json>", "Additional JSON data for authentication")
+                .option(
+                    "--auth-data <json>",
+                    "Additional JSON data for authentication. Can be either an inline JSON object or a path to a JSON file",
+                )
                 .option("--access-key-id <id>", "Access key ID for authentication")
                 .option("--secret-access-key <key>", "Secret access key for authentication")
-                .option("-e --endpoint <url>", "Service endpoint")
+                .option("-e --endpoint <url>", "Service endpoint");
 
             const fields = flattenShape(operation.inputShape);
             this.#registerOptions(cliCommand, fields);
@@ -139,11 +157,7 @@ export class SmithyCli {
                 let input: Record<string, any> = {};
 
                 if (options.input) {
-                    try {
-                        input = JSON.parse(options.input);
-                    } catch (e) {
-                        throw new Error("Input is not valid JSON");
-                    }
+                    input = parseJson(options.input, "Input");
                 } else {
                     input = parseInputOptions(options, fields);
                 }
@@ -151,15 +165,19 @@ export class SmithyCli {
                 let authData: Record<string, any> | undefined;
                 if (options.authData) {
                     try {
-                        authData = JSON.parse(options.authData);
+                        authData = parseJson(options.authData, "Auth data");
                     } catch (e) {
-                        throw new Error("Auth data is not valid JSON");
+                        throw new TypeError("Auth data is not valid JSON");
                     }
                 }
 
                 const client = await this.#clientFactory({
-                    ...options,
-                    data: authData,
+                    apiKey: options.apiKey,
+                    bearerToken: options.bearerToken,
+                    accessKeyId: options.accessKeyId,
+                    secretAccessKey: options.secretAccessKey,
+                    endpoint: options.endpoint,
+                    authData,
                 });
 
                 const res = await client.send(new ModuleCommand(input));
