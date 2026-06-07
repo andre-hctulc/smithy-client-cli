@@ -1,29 +1,60 @@
 import { Command, type ParseOptions } from "commander";
 import type { AnyClient, BaseShape, SmithyModel } from "./smithy.types.js";
-import { flattenShape, resolveShape, parseInputOptions, parseJson } from "./util.js";
+import { flattenShape, resolveShape, parseInputOptions, parseJsonRef } from "./util.js";
 import { isReadable } from "stream";
 import { createWriteStream } from "fs";
 import { writeFile } from "fs/promises";
 
 export interface SmithyCliOptions {
+    /**
+     * Handle program after preparing, before parsing.
+     */
     handle?: (program: Command) => void;
+    /**
+     * Handle commands after they are created, before they are added to the program.
+     */
     handleCommand?: (command: Command, operationName: string, operation: any) => void;
+    /**
+     * CLI description
+     */
     description?: string;
+    /**
+     * CLI version
+     */
+    version?: string;
 }
 
 interface AuthOptions {
+    /**
+     * API key for authentication
+     */
     apiKey?: string;
+    /**
+     * Bearer token for authentication
+     */
     bearerToken?: string;
-    data?: Record<string, any>;
+    /**
+     * Access key ID for authentication
+     */
     accessKeyId?: string;
+    /**
+     * Secret access key for authentication
+     */
     secretAccessKey?: string;
 }
 
-interface EndpointOptions {
+interface CommonClientOptions {
+    /**
+     * Endpoint URL for the client
+     */
     endpoint?: string;
+    /**
+     * Additional metadata
+     */
+    metadata?: Record<string, any>;
 }
 
-interface ClientFactoryOptions extends AuthOptions, EndpointOptions {
+interface ClientFactoryOptions extends AuthOptions, CommonClientOptions {
     [key: string]: any;
 }
 
@@ -47,15 +78,16 @@ export class SmithyCli {
     ) {
         this.#options = options;
         this.#cliName = cliName;
-        this.#clientFactory = clientFactory;
         this.#model = model;
         this.#module = clientModule;
-        this.#discoverOperations();
+        this.#clientFactory = clientFactory;
     }
 
     start(argv?: string[], options?: ParseOptions) {
+        this.#discoverOperations();
         this.#initProgram();
         this.#program.parse(argv ?? process.argv, options);
+        return this;
     }
 
     // Discover all operations and their input shapes from the Smithy model
@@ -91,7 +123,7 @@ export class SmithyCli {
         });
     }
 
-    #registerOptions(command: Command, fields: BaseShape[]) {
+    #addCommandOptions(command: Command, fields: BaseShape[]) {
         for (const field of fields) {
             const name = field.name || "root";
 
@@ -102,12 +134,40 @@ export class SmithyCli {
 
             // json input
             const jsonFlag = `--inj-${name} <path>`;
-            const jsonDescription = `${field.type} - Read from JSON file`;
+            const jsonDescription = `${field.type}. ${parseJsonRef.description}`;
             command.option(jsonFlag, jsonDescription);
         }
 
         // Full input. Overrides other input options if provided
-        command.option("--input <jsonOrPath>", `Full input - JSON file path or raw JSON string`);
+        command.option("--input <jsonOrPath>", `Full input. ${parseJsonRef.description}`);
+    }
+
+    async #createClientFromOptions(options: any): Promise<AnyClient> {
+        let metadata: Record<string, any> | undefined;
+        if (options.metadata) {
+            metadata = parseJsonRef(options.metadata, "Metadata");
+        }
+        return this.#clientFactory({
+            apiKey: options.apiKey,
+            bearerToken: options.bearerToken,
+            accessKeyId: options.accessKeyId,
+            secretAccessKey: options.secretAccessKey,
+            endpoint: options.endpoint,
+            metadata,
+        });
+    }
+
+    #addClientOptions(command: Command) {
+        command
+            .option("--api-key <key>", "API key for authentication")
+            .option("--bearer-token <token>", "Bearer token for authentication")
+            .option(
+                "--metadata <json>",
+                `Additional metadata passed to the client factory. ${parseJsonRef.description}`,
+            )
+            .option("--access-key-id <id>", "Access key ID for authentication")
+            .option("--secret-access-key <key>", "Secret access key for authentication")
+            .option("-e --endpoint <url>", "Service endpoint");
     }
 
     #initProgram() {
@@ -116,9 +176,7 @@ export class SmithyCli {
         this.#program
             .name(this.#cliName)
             .description(this.#options.description ?? `CLI for ${this.#cliName}`)
-            .version("0.0.1");
-
-        this.#options.handle?.(this.#program);
+            .version(this.#options.version ?? "0.0.1");
 
         for (const [moduleCommandName, ModuleCommand] of Object.entries(this.#moduleCommands)) {
             const commandName = moduleCommandName.replace(/Command$/, "");
@@ -132,53 +190,28 @@ export class SmithyCli {
                 .description(operation.documentation || `Execute the ${commandName} command`)
                 .option(
                     "-o --output-file <file>",
-                    "Write output to file instead of stdout, use {{commandName}} as placeholder for dynamic naming",
+                    "Write output to file instead of stdout. Use {{commandName}} as placeholder for dynamic naming",
                 )
                 .option(
                     "--output-length <number>",
                     "Truncate output to specified length (for non-file output)",
-                )
-                .option("--api-key <key>", "API key for authentication")
-                .option("--bearer-token <token>", "Bearer token for authentication")
-                .option(
-                    "--auth-data <json>",
-                    "Additional JSON data for authentication. Can be either an inline JSON object or a path to a JSON file",
-                )
-                .option("--access-key-id <id>", "Access key ID for authentication")
-                .option("--secret-access-key <key>", "Secret access key for authentication")
-                .option("-e --endpoint <url>", "Service endpoint");
+                );
+
+            this.#addClientOptions(cliCommand);
 
             const fields = flattenShape(operation.inputShape);
-            this.#registerOptions(cliCommand, fields);
-
-            this.#options.handleCommand?.(cliCommand, commandName, operation);
+            this.#addCommandOptions(cliCommand, fields);
 
             cliCommand.action(async (options) => {
                 let input: Record<string, any> = {};
 
                 if (options.input) {
-                    input = parseJson(options.input, "Input");
+                    input = parseJsonRef(options.input, "Input");
                 } else {
                     input = parseInputOptions(options, fields);
                 }
 
-                let authData: Record<string, any> | undefined;
-                if (options.authData) {
-                    try {
-                        authData = parseJson(options.authData, "Auth data");
-                    } catch (e) {
-                        throw new TypeError("Auth data is not valid JSON");
-                    }
-                }
-
-                const client = await this.#clientFactory({
-                    apiKey: options.apiKey,
-                    bearerToken: options.bearerToken,
-                    accessKeyId: options.accessKeyId,
-                    secretAccessKey: options.secretAccessKey,
-                    endpoint: options.endpoint,
-                    authData,
-                });
+                const client = await this.#createClientFromOptions(options);
 
                 const res = await client.send(new ModuleCommand(input));
                 await this.#handleResponse(
@@ -189,8 +222,12 @@ export class SmithyCli {
                 );
             });
 
+            this.#options.handleCommand?.(cliCommand, commandName, operation);
+
             this.#program.addCommand(cliCommand);
         }
+
+        this.#options.handle?.(this.#program);
     }
 
     async #handleResponse(

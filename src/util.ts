@@ -88,7 +88,7 @@ export function flattenShape(shape: any, prefix = ""): BaseShape[] {
 /**
  * options key -> shape key
  */
-function parseKey(key: string, fields: BaseShape[]): [string, BaseShape] {
+function parseInputOption(key: string, fields: BaseShape[]): [parsedKey: string, shape: BaseShape] {
     const keyCapitalized = key.replace(/^inj?/, "");
     const keyLower = keyCapitalized.charAt(0).toLowerCase() + keyCapitalized.slice(1);
     let keyUsed: string | undefined;
@@ -117,26 +117,29 @@ export function parseInputOptions(options: Record<string, any>, fields: BaseShap
     for (let [key, value] of Object.entries(options)) {
         // input options: Parse inline input fragments
         if (/^in[A-Z]/.test(key)) {
-            const [keyUsed, shape] = parseKey(key, fields);
-            setProperty(result, keyUsed, coerceValue(value, shape));
+            const [parsedKey, shape] = parseInputOption(key, fields);
+            setProperty(result, parsedKey, coerceValue(value, shape));
         }
         // json input options: Read input fragment from json file
         else if (/^inj[A-Z]/.test(key)) {
-            const [keyUsed, shape] = parseKey(key, fields);
-            const fileContent = readFileSync(value as string, "utf-8");
-            setProperty(result, keyUsed, coerceValue(fileContent, shape));
+            const [parsedKey, shape] = parseInputOption(key, fields);
+            const json = parseJsonRef(value, `Input for ${parsedKey}`);
+            setProperty(result, parsedKey, coerceValue(json, shape));
         }
     }
 
     return result;
 }
 
-function isPrimitiveType(type: string) {
+function isPrimitiveSmithyType(type: string) {
     return ["string", "integer", "float", "boolean"].includes(type);
 }
 
 function coerceValue(value: unknown, shape: BaseShape): any {
     if (shape.type === "integer") {
+        if (Number.isInteger(value)) {
+            return value;
+        }
         const i = parseInt(value as string, 10);
         if (isNaN(i)) {
             throw new TypeError(`Value for ${shape.name} must be a valid integer`);
@@ -145,6 +148,9 @@ function coerceValue(value: unknown, shape: BaseShape): any {
     }
 
     if (shape.type === "float") {
+        if (typeof value === "number") {
+            return value;
+        }
         const f = parseFloat(value as string);
         if (isNaN(f)) {
             throw new TypeError(`Value for ${shape.name} must be a valid float`);
@@ -157,23 +163,34 @@ function coerceValue(value: unknown, shape: BaseShape): any {
     }
 
     if (shape.type === "array") {
-        const primitiveMembers = isPrimitiveType(shape.type);
-
         if (Array.isArray(value)) {
             return value;
         }
 
-        if (primitiveMembers) {
-            if (typeof value === "string") {
-                return value.split(",").map((v) => coerceValue(v, shape.member!));
-            }
-            throw new TypeError(`Value for ${shape.name} must be an array or comma-separated string`);
-        } else {
+        const parseArrayAsJson = () => {
             try {
                 return JSON.parse(value as string);
             } catch (e) {
                 throw new TypeError(`Value for ${shape.name} must be a valid JSON array`);
             }
+        };
+
+        const primitiveMembers = isPrimitiveSmithyType(shape.type);
+
+        if (primitiveMembers) {
+            if (typeof value === "string") {
+                const trimmed = value.trim();
+
+                if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                    return parseArrayAsJson();
+                } else {
+                    return value.split(",").map((v) => coerceValue(v, shape.member!));
+                }
+            }
+
+            throw new TypeError(`Value for ${shape.name} must be an array or comma-separated string`);
+        } else {
+            return parseArrayAsJson();
         }
     }
 
@@ -189,7 +206,7 @@ function coerceValue(value: unknown, shape: BaseShape): any {
             return value;
         }
 
-        throw new TypeError(`Value for ${shape.name} must be an object or JSON string`);
+        throw new TypeError(`Value for ${shape.name} must be an object`);
     }
 
     if (shape.type === "map") {
@@ -203,7 +220,7 @@ function coerceValue(value: unknown, shape: BaseShape): any {
         if (value && typeof value === "object") {
             return value;
         }
-        throw new TypeError(`Value for ${shape.name} must be an object or JSON string`);
+        throw new TypeError(`Value for ${shape.name} must be an object`);
     }
 
     return value;
@@ -216,10 +233,15 @@ export function pascalToKebabCase(str: string): string {
         .toLowerCase();
 }
 
-export function parseJson(fileOrJson: string, label: string) {
+export function parseJsonRef(fileOrJson: string, label: string) {
     fileOrJson = fileOrJson.trim();
 
-    if (fileOrJson.startsWith("{")) {
+    if (
+        fileOrJson.startsWith('"') ||
+        fileOrJson.startsWith("{") ||
+        fileOrJson.startsWith("[") ||
+        !isNaN(Number(fileOrJson))
+    ) {
         try {
             return JSON.parse(fileOrJson);
         } catch (e) {
@@ -234,3 +256,5 @@ export function parseJson(fileOrJson: string, label: string) {
         }
     }
 }
+
+parseJsonRef.description = "Format: A raw JSON object string or a path to a JSON file";
