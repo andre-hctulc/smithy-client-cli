@@ -33,3 +33,36 @@ export type BaseShape = {
     key?: BaseShape;
     traits?: Record<string, any>;
 };
+
+export interface SmithyClientOptions {
+    /**
+     * Endpoint URL for the client
+     */
+    endpoint?: string;
+    /**
+     * Maximum number of attempts for client requests
+     */
+    maxAttempts?: number;
+    /**
+     * Api Key for authentication
+     */
+    apiKey?: { apiKey: string };
+    /**
+     * Bearer token for authentication
+     */
+    token?: { token: string };
+    credentials?: {
+        /**
+         * Access key ID for authentication
+         */
+        accessKeyId: string;
+        /**
+         * Secret access key for authentication
+         */
+        secretAccessKey: string;
+    };
+    /**
+     * Additional metadata
+     */
+    metadata?: Record<string, unknown>;
+}

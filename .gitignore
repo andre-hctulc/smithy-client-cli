@@ -8,4 +8,3 @@ dist
 package-lock.json
 .parcel-cache
 .turbo
-CHANGELOG.md

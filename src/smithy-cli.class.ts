@@ -1,9 +1,18 @@
 import { Command, type ParseOptions } from "commander";
-import type { AnyClient, BaseShape, SmithyModel } from "./smithy.types.js";
-import { flattenShape, resolveShape, parseInputOptions, parseJsonRef } from "./util.js";
+import type { AnyClient, BaseShape, SmithyClientOptions, SmithyModel } from "./smithy.types.js";
+import {
+    flattenShape,
+    resolveShape,
+    parseInputOptions,
+    parseJsonRef,
+    type LogLevel,
+    log,
+    parsePath,
+} from "./util.js";
 import { isReadable } from "stream";
 import { createWriteStream } from "fs";
 import { writeFile } from "fs/promises";
+import { isAbsolute, join } from "path/win32";
 
 export interface SmithyCliOptions {
     /**
@@ -24,41 +33,11 @@ export interface SmithyCliOptions {
     version?: string;
 }
 
-interface AuthOptions {
-    /**
-     * API key for authentication
-     */
-    apiKey?: string;
-    /**
-     * Bearer token for authentication
-     */
-    bearerToken?: string;
-    /**
-     * Access key ID for authentication
-     */
-    accessKeyId?: string;
-    /**
-     * Secret access key for authentication
-     */
-    secretAccessKey?: string;
-}
+export type ClientFactory = (options: SmithyClientOptions) => AnyClient | Promise<AnyClient>;
 
-interface CommonClientOptions {
-    /**
-     * Endpoint URL for the client
-     */
-    endpoint?: string;
-    /**
-     * Additional metadata
-     */
-    metadata?: Record<string, any>;
-}
-
-interface ClientFactoryOptions extends AuthOptions, CommonClientOptions {
-    [key: string]: any;
-}
-
-export type ClientFactory = (options: ClientFactoryOptions) => AnyClient | Promise<AnyClient>;
+const defaultClientOptions: SmithyClientOptions = {
+    maxAttempts: 1,
+};
 
 export class SmithyCli {
     #model: SmithyModel;
@@ -142,16 +121,30 @@ export class SmithyCli {
         command.option("--input <jsonOrPath>", `Full input. ${parseJsonRef.description}`);
     }
 
-    async #createClientFromOptions(options: any): Promise<AnyClient> {
+    #setLogLevel(options: Record<string, any>): LogLevel {
+        process.env.SMITHY_CLI_LOG_LEVEL = options.logLevel || "info";
+        return process.env.SMITHY_CLI_LOG_LEVEL as LogLevel;
+    }
+
+    async #createClient(options: Record<string, any>): Promise<AnyClient> {
         let metadata: Record<string, any> | undefined;
         if (options.metadata) {
-            metadata = parseJsonRef(options.metadata, "Metadata");
+            metadata = parseJsonRef(options.metadata, "Metadata", options);
         }
         return this.#clientFactory({
-            apiKey: options.apiKey,
-            bearerToken: options.bearerToken,
-            accessKeyId: options.accessKeyId,
-            secretAccessKey: options.secretAccessKey,
+            ...defaultClientOptions,
+            maxAttempts: options.maxAttempts
+                ? parseInt(options.maxAttempts, 10)
+                : defaultClientOptions.maxAttempts,
+            apiKey: { apiKey: options.apiKey },
+            token: { token: options.token },
+            credentials:
+                options.accessKeyId && options.secretAccessKey
+                    ? {
+                          accessKeyId: options.accessKeyId,
+                          secretAccessKey: options.secretAccessKey,
+                      }
+                    : undefined,
             endpoint: options.endpoint,
             metadata,
         });
@@ -159,15 +152,16 @@ export class SmithyCli {
 
     #addClientOptions(command: Command) {
         command
-            .option("--api-key <key>", "API key for authentication")
-            .option("--bearer-token <token>", "Bearer token for authentication")
+            .option("-A --api-key <key>", "API key for authentication")
+            .option("-T --token <token>", "Bearer token for authentication")
             .option(
                 "--metadata <json>",
                 `Additional metadata passed to the client factory. ${parseJsonRef.description}`,
             )
-            .option("--access-key-id <id>", "Access key ID for authentication")
-            .option("--secret-access-key <key>", "Secret access key for authentication")
-            .option("-e --endpoint <url>", "Service endpoint");
+            .option("-I --access-key-id <id>", "Access key ID for authentication")
+            .option("-S --secret-access-key <key>", "Secret access key for authentication")
+            .option("-E --endpoint <url>", "Service endpoint")
+            .option("-M --max-attempts <number>", "Maximum number of attempts for client requests");
     }
 
     #initProgram() {
@@ -176,7 +170,13 @@ export class SmithyCli {
         this.#program
             .name(this.#cliName)
             .description(this.#options.description ?? `CLI for ${this.#cliName}`)
-            .version(this.#options.version ?? "0.0.1");
+            .version(this.#options.version ?? "0.0.1")
+            .option("-L --log-level <level>", "Log level (error, warn, info, debug, verbose)", "info")
+            .option("-B --base-dir <path>", "Base directory for resolving relative paths in options");
+
+        this.#program.hook("preAction", (command) => {
+            this.#setLogLevel(command.optsWithGlobals());
+        });
 
         for (const [moduleCommandName, ModuleCommand] of Object.entries(this.#moduleCommands)) {
             const commandName = moduleCommandName.replace(/Command$/, "");
@@ -203,23 +203,22 @@ export class SmithyCli {
             this.#addCommandOptions(cliCommand, fields);
 
             cliCommand.action(async (options) => {
-                let input: Record<string, any> = {};
+                options = cliCommand.optsWithGlobals();
+
+                log("debug", "Command options for", options);
+
+                let input: Record<string, any>;
 
                 if (options.input) {
-                    input = parseJsonRef(options.input, "Input");
+                    input = parseJsonRef(options.input, "Input", options);
                 } else {
                     input = parseInputOptions(options, fields);
                 }
 
-                const client = await this.#createClientFromOptions(options);
+                const client = await this.#createClient(options);
 
                 const res = await client.send(new ModuleCommand(input));
-                await this.#handleResponse(
-                    commandName,
-                    res,
-                    options.outputFile,
-                    parseInt(options.outputLength) || undefined,
-                );
+                await this.#handleResponse(commandName, res, options);
             });
 
             this.#options.handleCommand?.(cliCommand, commandName, operation);
@@ -230,13 +229,12 @@ export class SmithyCli {
         this.#options.handle?.(this.#program);
     }
 
-    async #handleResponse(
-        commandName: string,
-        response: any,
-        writeToFile?: string,
-        outputLength?: number,
-    ): Promise<void> {
-        writeToFile = writeToFile ? writeToFile.replace(/{{commandName}}/g, commandName) : undefined;
+    async #handleResponse(commandName: string, response: any, options: Record<string, any>): Promise<void> {
+        const writeToFile = options.outputFile
+            ? options.outputFile.replace(/{{commandName}}/g, commandName)
+            : undefined;
+        const outFile = writeToFile ? parsePath(writeToFile, options) : null;
+        const outputLength = options.outputLength ? parseInt(options.outputLength, 10) : undefined;
 
         // BUG binary response includes helper methods like transformToWebStream etc
         if (
@@ -245,13 +243,13 @@ export class SmithyCli {
             response instanceof ArrayBuffer ||
             isReadable(response)
         ) {
-            if (writeToFile) {
+            if (outFile) {
                 const stream = response instanceof Blob ? response.stream() : response;
-                const writeStream = createWriteStream(writeToFile);
+                const writeStream = createWriteStream(outFile);
                 stream.pipe(writeStream);
                 return new Promise<void>((resolve, reject) => {
                     writeStream.on("finish", () => {
-                        console.log(`Response written to ${writeToFile}`);
+                        log("info", `Response written to ${outFile}`);
                         resolve();
                     });
                     writeStream.on("error", (err) => {
@@ -259,14 +257,14 @@ export class SmithyCli {
                     });
                 });
             } else {
-                console.log("Binary response received (not displayed)");
+                log("info", "Binary response received (not displayed)");
             }
         } else {
             let json = JSON.stringify(response, null, 2);
 
-            if (writeToFile) {
-                await writeFile(writeToFile, json);
-                console.log(`Response written to ${writeToFile}`);
+            if (outFile) {
+                await writeFile(outFile, json);
+                log("info", `Response written to ${outFile}`);
             } else {
                 const ol = outputLength ?? 1000;
                 const truncated = json.length > ol;

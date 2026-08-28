@@ -1,6 +1,6 @@
 {
     "name": "@dre44/smithy-client-cli",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "",
     "type": "module",
     "scripts": {
@@ -19,7 +19,7 @@
         "dot-prop": "^10.1.0"
     },
     "devDependencies": {
-        "@smithy/smithy-client": "^4.12.3",
-        "@types/node": "^22.14.1"
+        "@smithy/smithy-client": "^4",
+        "@types/node": "^24"
     }
 }

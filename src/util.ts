@@ -1,6 +1,32 @@
 import { readFileSync } from "fs";
 import type { SmithyModel, BaseShape } from "./smithy.types.js";
 import { setProperty } from "dot-prop";
+import { isAbsolute, resolve } from "path";
+
+export type LogLevel = "debug" | "info" | "error";
+
+const levels: LogLevel[] = ["debug", "info", "error"];
+
+export function log(level: LogLevel, ...message: string[]) {
+    let currentLogLevel = (process.env.SMITHY_CLI_LOG_LEVEL as LogLevel) || "info";
+
+    if (!levels.includes(level)) {
+        level = "info";
+    }
+    if (!levels.includes(currentLogLevel)) {
+        currentLogLevel = "info";
+    }
+
+    const prefix = {
+        debug: "[DEBUG]",
+        info: "[INFO] ",
+        error: "[ERROR]",
+    }[level];
+
+    if (levels.indexOf(level) >= levels.indexOf(currentLogLevel)) {
+        console.log(prefix, ...message);
+    }
+}
 
 // Recursively resolve a shape and its members
 export function resolveShape(model: SmithyModel, shapeId: string, seen = new Set()): any {
@@ -123,7 +149,7 @@ export function parseInputOptions(options: Record<string, any>, fields: BaseShap
         // json input options: Read input fragment from json file
         else if (/^inj[A-Z]/.test(key)) {
             const [parsedKey, shape] = parseInputOption(key, fields);
-            const json = parseJsonRef(value, `Input for ${parsedKey}`);
+            const json = parseJsonRef(value, `Input for ${parsedKey}`, options);
             setProperty(result, parsedKey, coerceValue(json, shape));
         }
     }
@@ -233,7 +259,7 @@ export function pascalToKebabCase(str: string): string {
         .toLowerCase();
 }
 
-export function parseJsonRef(fileOrJson: string, label: string) {
+export function parseJsonRef(fileOrJson: string, label: string, options: Record<string, any>): any {
     fileOrJson = fileOrJson.trim();
 
     if (
@@ -248,7 +274,11 @@ export function parseJsonRef(fileOrJson: string, label: string) {
             throw new TypeError(`${label} is not valid JSON`);
         }
     } else {
-        const content = readFileSync(fileOrJson, "utf-8");
+        const p = parsePath(fileOrJson, options);
+
+        log("debug", `Reading ${label} from file: ${p}`);
+
+        const content = readFileSync(p, "utf-8");
         try {
             return JSON.parse(content);
         } catch (e) {
@@ -258,3 +288,7 @@ export function parseJsonRef(fileOrJson: string, label: string) {
 }
 
 parseJsonRef.description = "Format: A raw JSON object string or a path to a JSON file";
+
+export function parsePath(path: string, options: Record<string, any>): string {
+    return isAbsolute(path) ? path : resolve(options.baseDir || process.cwd(), path);
+}
